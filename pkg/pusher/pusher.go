@@ -41,7 +41,7 @@ type Service struct {
 	quit              chan struct{}
 	chunksWorkerQuitC chan struct{}
 	retryMap          map[string]time.Duration
-	retryMapMu        sync.Mutex
+	retryMux          sync.Mutex
 }
 
 var (
@@ -131,7 +131,7 @@ LOOP:
 			}
 
 			func(ctx context.Context, ch swarm.Chunk) {
-				_ = requestGroup.DoChan(ch.Address().String(), func() (interface{}, error) {
+				_ = requestGroup.DoChan(ch.Address().String(), func() (_ interface{}, _ error) {
 					var (
 						err        error
 						startTime  = time.Now()
@@ -165,7 +165,7 @@ LOOP:
 							wantSelf = true
 						} else {
 							if retry, close := s.retry(ch.Address()); retry {
-								return nil, nil
+								return
 							} else {
 								close()
 								s.storer.Set(ctx, storage.ModeSetRemove, ch.Address())
@@ -178,21 +178,21 @@ LOOP:
 						publicKey, err = crypto.Recover(receipt.Signature, receipt.Address.Bytes())
 						if err != nil {
 							err = fmt.Errorf("pusher: receipt recover: %w", err)
-							return nil, nil
+							return
 
 						}
 
 						storerPeer, err = crypto.NewOverlayAddress(*publicKey, s.networkID)
 						if err != nil {
 							err = fmt.Errorf("pusher: receipt storer address: %w", err)
-							return nil, nil
+							return
 
 						}
 					}
 
 					if err = s.storer.Set(ctx, storage.ModeSetSync, ch.Address()); err != nil {
 						err = fmt.Errorf("pusher: set sync: %w", err)
-						return nil, nil
+						return
 
 					}
 
@@ -201,18 +201,18 @@ LOOP:
 						err = t.Inc(tags.StateSynced)
 						if err != nil {
 							err = fmt.Errorf("pusher: increment synced: %v", err)
-							return nil, nil
+							return
 						}
 						if wantSelf {
 							err = t.Inc(tags.StateSent)
 							if err != nil {
 								err = fmt.Errorf("pusher: increment sent: %w", err)
-								return nil, nil
+								return
 
 							}
 						}
 					}
-					return nil, nil
+					return
 				})
 
 			}(ctx, ch)
@@ -281,8 +281,8 @@ func (s *Service) Close() error {
 
 func (s *Service) retry(addr swarm.Address) (bool, func()) {
 
-	s.retryMapMu.Lock()
-	defer s.retryMapMu.Unlock()
+	s.retryMux.Lock()
+	defer s.retryMux.Unlock()
 
 	expiration := s.retryMap[addr.String()]
 	if expiration == 0 {
@@ -294,8 +294,8 @@ func (s *Service) retry(addr swarm.Address) (bool, func()) {
 	}
 
 	return false, func() {
-		s.retryMapMu.Lock()
-		defer s.retryMapMu.Unlock()
+		s.retryMux.Lock()
+		defer s.retryMux.Unlock()
 		delete(s.retryMap, addr.String())
 	}
 }
